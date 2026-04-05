@@ -259,6 +259,7 @@ def schedule_globally(all_normals_per_div, all_baskets, settings, min_gap_minute
 
         # per-person scheduled times (for faculty gap checks): person -> list of (day, start_min, end_min)
         occ_person_times = defaultdict(list)
+        occ_room_times = defaultdict(list)
         # per-division/day list of existing placements for overlap/room/person checks (we will use placements dict)
         placed_counts = defaultdict(int)
 
@@ -320,6 +321,13 @@ def schedule_globally(all_normals_per_div, all_baskets, settings, min_gap_minute
                         continue
                     if not (cand_end_min + faculty_gap_minutes <= pstart or cand_start_min >= pend + faculty_gap_minutes):
                         return True
+            # 🔴 GLOBAL ROOM CONFLICT CHECK
+            for room in rooms_set:
+                for (r_day, r_start, r_end) in occ_room_times.get(room, []):
+                    if r_day != day:
+                        continue
+                    if not (cand_end_min <= r_start or cand_start_min >= r_end):
+                        return True
             return False
 
         def violates_same_course_day_rules(mdiv, day, group_id, kind, cand_start_min):
@@ -366,6 +374,10 @@ def schedule_globally(all_normals_per_div, all_baskets, settings, min_gap_minute
             # mark person times
             for p in busy_people:
                 occ_person_times[p].append((day, cand_start_min, cand_end_min))
+
+            # 🔴 LOCK ROOMS GLOBALLY
+            for room in rooms_set:
+                occ_room_times[room].append((day, cand_start_min, cand_end_min))
 
         unscheduled = []
 
