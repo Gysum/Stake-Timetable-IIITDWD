@@ -85,6 +85,76 @@ def safe_upper(val):
         pass
     return str(val).strip().upper()
 
+def safe_int(val):
+    """Safely convert a value to int, returning 0 on failure."""
+    try:
+        s = str(val).strip()
+        if s.lower() in ("", "nan", "none"):
+            return 0
+        return int(float(s))
+    except Exception:
+        return 0
+
+# ----------------------------
+# Room capacity helpers
+# ----------------------------
+def load_room_capacity_data(rooms_path="data/Rooms.xlsx"):
+    """
+    Load Rooms.xlsx and return:
+      - room_capacity_map: {room_name_upper -> int capacity}
+      - rooms_sorted_asc: [(room_name_upper, capacity), ...] sorted ascending by capacity
+    """
+    room_capacity_map = {}
+    rooms_sorted_asc = []
+    if not os.path.exists(rooms_path):
+        print(f"[WARNING] Rooms file not found: {rooms_path}. Room capacity checks disabled.")
+        return room_capacity_map, rooms_sorted_asc
+    try:
+        df = pd.read_excel(rooms_path)
+        df.columns = [str(c).strip() for c in df.columns]
+        for _, r in df.iterrows():
+            name = safe_upper(str(r.get("Room", "")).strip())
+            cap = safe_int(r.get("Seating Capacity", 0))
+            if name:
+                room_capacity_map[name] = cap
+        rooms_sorted_asc = sorted(room_capacity_map.items(), key=lambda x: x[1])
+    except Exception as e:
+        print(f"[WARNING] Could not load Rooms.xlsx: {e}. Room capacity checks disabled.")
+    return room_capacity_map, rooms_sorted_asc
+
+def resolve_room_for_capacity(assigned_rooms, num_students, room_capacity_map, rooms_sorted_asc):
+    """
+    Check if any assigned room can seat num_students students.
+    If not, find the smallest room from the master list that fits.
+    Returns:
+      (final_rooms_list, warning_message_or_None)
+    """
+    if not assigned_rooms or num_students <= 0 or not room_capacity_map:
+        return assigned_rooms, None
+
+    # Check if the currently assigned room(s) are sufficient
+    for room in assigned_rooms:
+        room_up = safe_upper(room)
+        if room_capacity_map.get(room_up, 0) >= num_students:
+            return assigned_rooms, None  # already OK
+
+    # Current rooms are insufficient — find the smallest room that fits
+    assigned_str = ", ".join(assigned_rooms)
+    assigned_caps = [room_capacity_map.get(safe_upper(r), 0) for r in assigned_rooms]
+    max_assigned_cap = max(assigned_caps) if assigned_caps else 0
+
+    for room_name, cap in rooms_sorted_asc:
+        if cap >= num_students:
+            msg = (f"Room auto-upgraded: [{assigned_str}] → {room_name} "
+                   f"(required: {num_students} students, original capacity: {max_assigned_cap})")
+            return [room_name], msg
+
+    # No room can fit this many students
+    msg = (f"WARNING: No room found for {num_students} students "
+           f"(assigned: [{assigned_str}], max available: "
+           f"{rooms_sorted_asc[-1][1] if rooms_sorted_asc else 0})")
+    return assigned_rooms, msg
+
 # ----------------------------
 # File reading helper
 # ----------------------------
@@ -139,6 +209,7 @@ def build_slot_requests_for_division(df, div_fullname, settings):
         room_no = parse_list(row.get("ROOM.NO", ""))
         lab_room_no = parse_list(row.get("LAB ROOM.NO", ""))
         slot_base = safe_upper(row.get("SLOT NAME", ""))
+        num_students = safe_int(row.get("NO. OF STUDENTS", 0))
         merge_raw = row.get("MERGE", "")
         # split comma-separated list, strip spaces, upper-case
         merge_list = [safe_upper(m.strip()) for m in str(merge_raw).split(",") if m.strip()]
@@ -173,6 +244,7 @@ def build_slot_requests_for_division(df, div_fullname, settings):
                     "L-T-P-S-C": ltpsc,
                     "ROOM.NO": room_no,
                     "LAB ROOM.NO": lab_room_no,
+                    "num_students": num_students,
                     "sem_type": sem_type,
                     "merge_with": merge_with,
                     "division": div_name_up,
@@ -771,7 +843,7 @@ def build_unallotted_rows(unscheduled_list, baskets_map):
 # ----------------------------
 # Write Excel (minute-aware header generation)
 # ----------------------------
-def write_year_excel(year, half_tag, placements, initial_interval_times, base_interval, break_ranges, colors, course_info_rows_per_div, settings, outdir=None, unallotted_rows=None):
+def write_year_excel(year, half_tag, placements, initial_interval_times, base_interval, break_ranges, colors, course_info_rows_per_div, settings, outdir=None, unallotted_rows=None, room_capacity_map=None, rooms_sorted_asc=None):
     if outdir is None:
         outdir = os.path.join("timetable_outputs", f"Year_{year}")
     os.makedirs(outdir, exist_ok=True)
@@ -939,6 +1011,18 @@ def write_year_excel(year, half_tag, placements, initial_interval_times, base_in
                     if col in ["FACULTY", "ROOM.NO"]:
                         if not str(val).strip() or pd.isna(val) or str(val).lower() == "nan":
                             val = "TBD"
+                    # Auto-upgrade ROOM.NO if it is too small for the student count
+                    if col == "ROOM.NO" and val != "TBD" and room_capacity_map:
+                        assigned = parse_list(str(val))
+                        num_students = safe_int(r.get("NO. OF STUDENTS", 0))
+                        if assigned and num_students > 0:
+                            resolved, note = resolve_room_for_capacity(
+                                assigned, num_students, room_capacity_map, rooms_sorted_asc or []
+                            )
+                            if note:
+                                course_title = r.get("COURSE TITLE", "") or ""
+                                print(f"  [Room Upgrade] {div} / {course_title}: {note}")
+                            val = ", ".join(resolved) if resolved else val
                 row_values.append(val)
             ws.append(row_values)
 
@@ -1009,6 +1093,12 @@ def main():
             print("Please enter integer minutes")
     print("Minimum gap (course slots):", min_gap, "minutes")
     print("Minimum gap (faculty):", faculty_gap, "minutes")
+    print("-" * 40)
+
+    # Load room capacity data for auto-room-upgrade feature
+    room_capacity_map, rooms_sorted_asc = load_room_capacity_data(r"data\Rooms.xlsx")
+    if room_capacity_map:
+        print(f"Loaded {len(room_capacity_map)} rooms from Rooms.xlsx for capacity checks.")
     print("-" * 40)
 
     # Hardcoded academic years and their division input paths
@@ -1089,11 +1179,11 @@ def main():
 
         placements_first, uns_first, interval_times, base_interval, break_ranges = schedule_globally(normals_first, baskets_first, settings, min_gap, faculty_gap)
         unallotted_rows_first = build_unallotted_rows(uns_first if isinstance(uns_first, list) else [], baskets_first)
-        write_year_excel(y, "first_halfsem", placements_first, interval_times, base_interval, break_ranges, colors, course_info_rows, settings, unallotted_rows=unallotted_rows_first)
+        write_year_excel(y, "first_halfsem", placements_first, interval_times, base_interval, break_ranges, colors, course_info_rows, settings, unallotted_rows=unallotted_rows_first, room_capacity_map=room_capacity_map, rooms_sorted_asc=rooms_sorted_asc)
 
         placements_second, uns_second, interval_times2, base_interval2, break_ranges2 = schedule_globally(normals_second, baskets_second, settings, min_gap, faculty_gap)
         unallotted_rows_second = build_unallotted_rows(uns_second if isinstance(uns_second, list) else [], baskets_second)
-        write_year_excel(y, "second_halfsem", placements_second, interval_times2, base_interval2, break_ranges2, colors, course_info_rows, settings, unallotted_rows=unallotted_rows_second)
+        write_year_excel(y, "second_halfsem", placements_second, interval_times2, base_interval2, break_ranges2, colors, course_info_rows, settings, unallotted_rows=unallotted_rows_second, room_capacity_map=room_capacity_map, rooms_sorted_asc=rooms_sorted_asc)
 
         uns_total = []
         if isinstance(uns_first, list):
