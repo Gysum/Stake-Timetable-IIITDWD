@@ -690,10 +690,10 @@ def build_unallotted_rows(unscheduled_list, baskets_map):
                     code = m.get("code", "") or ""
                     title = m.get("title", "") or ""
                     kind = (m.get("kind") or "").upper()
-                    faculty = ", ".join(m.get("faculty") or [])
+                    faculty = ", ".join(m.get("faculty") or []) or "TBD"
                     class_ass = ", ".join(m.get("class_asst") or [])
                     lab_ass = ", ".join(m.get("lab_asst") or [])
-                    rooms = ", ".join(m.get("ROOM.NO") or [])
+                    rooms = ", ".join(m.get("ROOM.NO") or []) or "TBD"
                     labrooms = ", ".join(m.get("LAB ROOM.NO") or [])
                     merge = ", ".join(m.get("merge_with") or [])
                     rows.append({
@@ -717,10 +717,10 @@ def build_unallotted_rows(unscheduled_list, baskets_map):
                     "COURSE CODE": "",
                     "COURSE NAME": "",
                     "KIND": "",
-                    "FACULTY": "",
+                    "FACULTY": "TBD",
                     "CLASS ASSISTANTS": "",
                     "LAB ASSISTANTS": "",
-                    "ROOM.NO": "",
+                    "ROOM.NO": "TBD",
                     "LAB ROOM.NO": "",
                     "MERGE": bkey,
                     "REASON": "NO VALID SLOT (BASKET, MEMBERS UNKNOWN)"
@@ -731,10 +731,10 @@ def build_unallotted_rows(unscheduled_list, baskets_map):
             code = u.get("code", "") or ""
             title = u.get("title", "") or ""
             kind = (u.get("kind") or "").upper()
-            faculty = ", ".join(u.get("faculty") or [])
+            faculty = ", ".join(u.get("faculty") or []) or "TBD"
             class_ass = ", ".join(u.get("class_asst") or [])
             lab_ass = ", ".join(u.get("lab_asst") or [])
-            rooms = ", ".join(u.get("ROOM.NO") or [])
+            rooms = ", ".join(u.get("ROOM.NO") or []) or "TBD"
             labrooms = ", ".join(u.get("LAB ROOM.NO") or [])
             merge = ", ".join(u.get("merge_with") or [])
             rows.append({
@@ -935,6 +935,10 @@ def write_year_excel(year, half_tag, placements, initial_interval_times, base_in
                     val = r.get("FULLSEM OR HALFSEM", "")
                 else:
                     val = r.get(col, "")
+                    # Add TBD placeholder for Faculty and Room (Lecture) metadata columns
+                    if col in ["FACULTY", "ROOM.NO"]:
+                        if not str(val).strip() or pd.isna(val) or str(val).lower() == "nan":
+                            val = "TBD"
                 row_values.append(val)
             ws.append(row_values)
 
