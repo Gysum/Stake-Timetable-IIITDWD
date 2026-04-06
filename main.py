@@ -18,7 +18,8 @@ def load_settings(path="settings.json"):
         "working_days": ["Mon", "Tue", "Wed", "Thu", "Fri"],
         "working_hours": ["9:00", "18:30"],
         "break_slots": ["12:30-13:30", "16:30-17:00"],
-        "slot_durations": {"lec": 1.5, "lab": 2.0, "tut": 1.0}
+        "slot_durations": {"lec": 1.5, "lab": 2.0, "tut": 1.0},
+        "flexible_lab_durations": False
     }
     if os.path.exists(path):
         try:
@@ -227,8 +228,19 @@ def build_slot_requests_for_division(df, div_fullname, settings):
             group_id = f"{code}__{kind_lower}__{slot_base}"
             
             total_hours = hours
-            while total_hours > 0:
-                dur = min(dur_hours, total_hours)
+            # Snap labs to standard duration if requested
+            is_fixed_lab = (kind_lower == "lab" and not settings.get("flexible_lab_durations", False))
+            if is_fixed_lab:
+                num_sessions = math.ceil(total_hours / dur_hours - 1e-9) if total_hours > 0 else 0
+                if num_sessions == 0 and total_hours > 0: num_sessions = 1
+                total_hours = num_sessions * dur_hours
+
+            while total_hours > 1e-9:
+                if is_fixed_lab:
+                    dur = dur_hours
+                else:
+                    dur = min(dur_hours, total_hours)
+                
                 dur_min = max(1, int(round(dur * 60)))
                 slot_label = f"{slot_base}-{kind.upper()}"
                 occ = {
