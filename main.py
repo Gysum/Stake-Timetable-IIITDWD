@@ -192,9 +192,10 @@ def parse_LTP_from_ltpsc(ltpsc):
 # ----------------------------
 # Build slot requests for one division
 # ----------------------------
-def build_slot_requests_for_division(df, div_fullname, settings):
+def build_slot_requests_for_division(df, div_fullname, settings, room_capacity_map=None):
     normals = []
     baskets = {}
+    invalid_slots = []
     raw_rows = df.to_dict(orient="records")
     div_name_up = safe_upper(div_fullname)
     for idx, row in df.iterrows():
@@ -224,6 +225,32 @@ def build_slot_requests_for_division(df, div_fullname, settings):
             if hours <= 0:
                 continue
             kind_lower = kind.lower()
+
+            # --- ROOM VALIDATION ---
+            # Stricter check: ensure room name exists in room_capacity_map (if registry loaded)
+            assigned_rooms = room_no if kind_lower in ("lec", "tut") else lab_room_no
+            if room_capacity_map:
+                missing_rooms = []
+                for rname in assigned_rooms:
+                    r_up = safe_upper(rname)
+                    if r_up and r_up != "TBD" and r_up not in room_capacity_map:
+                        missing_rooms.append(r_up)
+                if missing_rooms:
+                    invalid_slots.append({
+                        "division": div_name_up,
+                        "slot_label": f"{slot_base}-{kind.upper()}",
+                        "code": code,
+                        "title": title,
+                        "kind": kind_lower.upper(),
+                        "faculty": faculty_list,
+                        "ROOM.NO": room_no,
+                        "LAB ROOM.NO": lab_room_no,
+                        "merge_with": merge_with,
+                        "sem_type": sem_type,
+                        "reason": f"Room(s) {missing_rooms} not found in master room list (Rooms.xlsx)"
+                    })
+                    continue
+
             dur_hours = settings["slot_durations"].get(kind_lower, 1.0)
             group_id = f"{code}__{kind_lower}__{slot_base}"
             
@@ -270,7 +297,7 @@ def build_slot_requests_for_division(df, div_fullname, settings):
                 else:
                     normals.append(occ)
                 total_hours -= dur
-    return normals, baskets, raw_rows
+    return normals, baskets, raw_rows, invalid_slots
 
 # Fix: trivial helper to avoid odd code line above
 def kind_upper(x):
@@ -844,7 +871,7 @@ def build_unallotted_rows(unscheduled_list, baskets_map):
                 "ROOM.NO": rooms,
                 "LAB ROOM.NO": labrooms,
                 "MERGE": merge,
-                "REASON": "NO VALID SLOT"
+                "REASON": u.get("reason", "NO VALID SLOT")
             })
         else:
             rows.append({
@@ -1155,6 +1182,8 @@ def main():
         baskets_second = {}
         course_info_rows = {}
         slot_bases_set = set()
+        invalid_f_all = []
+        invalid_s_all = []
         for div_full, path in div_paths.items():
             div_up = safe_upper(div_full)
             if not os.path.exists(path):
@@ -1166,7 +1195,14 @@ def main():
             df = read_input_file(path)
             rows = df.to_dict(orient='records')
             course_info_rows[div_up] = rows
-            normals, baskets, _ = build_slot_requests_for_division(df, div_full, settings)
+            normals, baskets, _, invalid = build_slot_requests_for_division(df, div_full, settings, room_capacity_map)
+            # collect invalid for later appending
+            for inv in invalid:
+                sem = safe_upper(inv.get("sem_type", "FULLSEM"))
+                if sem in ("FULLSEM", "HALFSEM-1"):
+                    invalid_f_all.append(inv)
+                if sem in ("FULLSEM", "HALFSEM-2"):
+                    invalid_s_all.append(inv)
             normals_f = [n for n in normals if safe_upper(n.get("sem_type", "FULLSEM")) in ("FULLSEM", "HALFSEM-1")]
             normals_s = [n for n in normals if safe_upper(n.get("sem_type", "FULLSEM")) in ("FULLSEM", "HALFSEM-2")]
             normals_first[div_up] = normals_f
@@ -1201,10 +1237,16 @@ def main():
                         break
 
         placements_first, uns_first, interval_times, base_interval, break_ranges = schedule_globally(normals_first, baskets_first, settings, min_gap, faculty_gap)
+        if isinstance(uns_first, list):
+            uns_first.extend(invalid_f_all)
+
         unallotted_rows_first = build_unallotted_rows(uns_first if isinstance(uns_first, list) else [], baskets_first)
         write_year_excel(y, "first_halfsem", placements_first, interval_times, base_interval, break_ranges, colors, course_info_rows, settings, unallotted_rows=unallotted_rows_first, room_capacity_map=room_capacity_map, rooms_sorted_asc=rooms_sorted_asc)
 
         placements_second, uns_second, interval_times2, base_interval2, break_ranges2 = schedule_globally(normals_second, baskets_second, settings, min_gap, faculty_gap)
+        if isinstance(uns_second, list):
+            uns_second.extend(invalid_s_all)
+
         unallotted_rows_second = build_unallotted_rows(uns_second if isinstance(uns_second, list) else [], baskets_second)
         write_year_excel(y, "second_halfsem", placements_second, interval_times2, base_interval2, break_ranges2, colors, course_info_rows, settings, unallotted_rows=unallotted_rows_second, room_capacity_map=room_capacity_map, rooms_sorted_asc=rooms_sorted_asc)
 
