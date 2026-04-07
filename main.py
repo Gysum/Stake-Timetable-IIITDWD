@@ -126,35 +126,58 @@ def load_room_capacity_data(rooms_path="data/Rooms.xlsx"):
 def resolve_room_for_capacity(assigned_rooms, num_students, room_capacity_map, rooms_sorted_asc):
     """
     Check if any assigned room can seat num_students students.
-    If not, find the smallest room from the master list that fits.
+    If not, or if room is significantly over-capacity (gap >= 40),
+    find the smallest room from the master list that fits.
     Returns:
       (final_rooms_list, warning_message_or_None)
     """
     if not assigned_rooms or num_students <= 0 or not room_capacity_map:
         return assigned_rooms, None
 
-    # Check if the currently assigned room(s) are sufficient
-    for room in assigned_rooms:
-        room_up = safe_upper(room)
-        if room_capacity_map.get(room_up, 0) >= num_students:
-            return assigned_rooms, None  # already OK
-
-    # Current rooms are insufficient — find the smallest room that fits
-    assigned_str = ", ".join(assigned_rooms)
+    # Calculate current max capacity
     assigned_caps = [room_capacity_map.get(safe_upper(r), 0) for r in assigned_rooms]
     max_assigned_cap = max(assigned_caps) if assigned_caps else 0
+    assigned_str = ", ".join(assigned_rooms)
 
+    # TRIGGER CONDITION: 
+    # 1. Under-capacity (Safety): Always auto-decide to upgrade.
+    # 2. Over-capacity (Efficiency): Auto-decide if mismatch is 40 or more seats.
+    should_auto_decide = (num_students > max_assigned_cap) or (max_assigned_cap - num_students >= 40)
+
+    if not should_auto_decide:
+        # Keep current assignment (mismatch is small or zero)
+        return assigned_rooms, None
+
+    # Find the smallest room that fits (Best-Fit)
+    best_fit_room = None
     for room_name, cap in rooms_sorted_asc:
         if cap >= num_students:
-            msg = (f"Room auto-upgraded: [{assigned_str}] → {room_name} "
-                   f"(required: {num_students} students, original capacity: {max_assigned_cap})")
-            return [room_name], msg
+            best_fit_room = room_name
+            break
 
-    # No room can fit this many students
-    msg = (f"WARNING: No room found for {num_students} students "
-           f"(assigned: [{assigned_str}], max available: "
-           f"{rooms_sorted_asc[-1][1] if rooms_sorted_asc else 0})")
-    return assigned_rooms, msg
+    # If no room fits, return warning
+    if not best_fit_room:
+        msg = (f"WARNING: No room found for {num_students} students "
+               f"(assigned: [{assigned_str}], max available: "
+               f"{rooms_sorted_asc[-1][1] if rooms_sorted_asc else 0})")
+        return assigned_rooms, msg
+
+    # We change if it's different in capacity or name
+    best_fit_cap = room_capacity_map.get(safe_upper(best_fit_room), 0)
+    
+    # If the assigned room is already sufficient AND is the best fit capacity-wise, don't flap
+    if max_assigned_cap == best_fit_cap and max_assigned_cap >= num_students:
+        return assigned_rooms, None
+
+    # Decide message: Upgrade or Efficiency Swap
+    if max_assigned_cap < num_students:
+        msg = (f"Room auto-upgraded: [{assigned_str}] → {best_fit_room} "
+               f"(required: {num_students} students, original capacity: {max_assigned_cap})")
+    else:
+        msg = (f"Room auto-corrected (efficiency): [{assigned_str}] → {best_fit_room} "
+               f"(required: {num_students} students, original capacity: {max_assigned_cap})")
+    
+    return [best_fit_room], msg
 
 # ----------------------------
 # File reading helper
